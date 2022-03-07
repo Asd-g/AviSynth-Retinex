@@ -159,27 +159,25 @@ void Recursive_Gaussian2D_Horizontal(double* output, const double* input, int he
 
 class Common : public GenericVideoFilter
 {
-    double* gauss;
-
 protected:
     std::vector<double> sigma;
     double lower_thr;
     double upper_thr;
-    const int HistBins = 4096;
+    int HistBins;
     bool fulls;
     bool fulld;
     bool v8 = true;
     int sigma_size;
     int* Histogram;
-    double* idata;
     int pcount;
 
-    void MSRKernel(double* odata, const double* idata, const int stride, const int width, const int height);
+    void MSRKernel(double* odata, const double* idata, double* gauss, const int stride, const int width, const int height);
 
 public:
     Common(PClip _child, const std::vector<double>& i_sigma, const double i_lower_thr, const double i_upper_thr, const bool i_fulls, const bool i_fulld, IScriptEnvironment* env)
         : GenericVideoFilter(_child), sigma(i_sigma), lower_thr(i_lower_thr), upper_thr(i_upper_thr), fulls(i_fulls), fulld(i_fulld)
     {
+        HistBins = 4096;
         sigma_size = sigma.size();
 
         for (int i = 0; i < sigma_size; ++i)
@@ -198,11 +196,7 @@ public:
         try { env->CheckVersion(8); }
         catch (const AvisynthError&) { v8 = false; };
 
-        pcount = (env->NewVideoFrame(vi, 32)->GetPitch() / vi.ComponentSize()) * vi.height;
-
-        gauss = reinterpret_cast<double*>(aligned_malloc(pcount * sizeof(double), 32));
         Histogram = reinterpret_cast<int*>(aligned_malloc(HistBins * sizeof(int), 32));
-        idata = reinterpret_cast<double*>(aligned_malloc(pcount * sizeof(double), 32));
     }
 
     int __stdcall SetCacheHints(int cachehints, int frame_range)
@@ -212,18 +206,13 @@ public:
 
     ~Common()
     {
-        aligned_free(idata);
         aligned_free(Histogram);
-        aligned_free(gauss);
     }
 };
 
 // Multi Scale Retinex process kernel for floating point data
-void Common::MSRKernel(double* odata, const double* idata, const int stride, const int width, const int height)
+void Common::MSRKernel(double* odata, const double* idata, double* gauss, const int stride, const int width, const int height)
 {
-    //double FloorFL = 0;
-    //double CeilFL = 1;
-
     for (int j = 0; j < height; ++j)
     {
         int i = stride * j;
@@ -277,7 +266,6 @@ void Common::MSRKernel(double* odata, const double* idata, const int stride, con
 class MSRCP : public Common
 {
     double chroma_protect;
-    double* odata;
     double sRangeFL;
     double sRangeCFL;
     double sRangeC2FL;
@@ -297,7 +285,6 @@ class MSRCP : public Common
 public:
     MSRCP(PClip _child, const std::vector<double>& i_sigma, const double i_lower_thr, const double i_upper_thr, const bool i_fulls, const bool i_fulld, const double i_chroma_protect, IScriptEnvironment* env);
     PVideoFrame __stdcall GetFrame(int n, IScriptEnvironment* env);
-    ~MSRCP();
 };
 
 
@@ -399,6 +386,11 @@ void MSRCP::process_core(PVideoFrame& dst, PVideoFrame& src)
     const int stride = src->GetPitch() / sizeof(T);
     const int width = src->GetRowSize() / sizeof(T);
     const int height = src->GetHeight();
+    pcount = stride * height;
+
+    double* gauss = reinterpret_cast<double*>(aligned_malloc(pcount * sizeof(double), 32));
+    double* idata = reinterpret_cast<double*>(aligned_malloc(pcount * sizeof(double), 32));
+    double* odata = reinterpret_cast<double*>(aligned_malloc(pcount * sizeof(double), 32));
 
     T sFloor = 0;
     T sCeil = peak;
@@ -458,7 +450,7 @@ void MSRCP::process_core(PVideoFrame& dst, PVideoFrame& src)
             }
 
             // Apply MSR to floating point intensity channel
-            MSRKernel(odata, idata, stride, width, height);
+            MSRKernel(odata, idata, gauss, stride, width, height);
             // Simplest color balance with pixel clipping on either side of the dynamic range
             SimplestColorBalance(odata, idata, stride, width, height);
 
@@ -536,7 +528,7 @@ void MSRCP::process_core(PVideoFrame& dst, PVideoFrame& src)
             }
 
             // Apply MSR to floating point intensity channel
-            MSRKernel(odata, idata, stride, width, height);
+            MSRKernel(odata, idata, gauss, stride, width, height);
             // Simplest color balance with pixel clipping on either side of the dynamic range
             SimplestColorBalance(odata, idata, stride, width, height);
 
@@ -645,7 +637,7 @@ void MSRCP::process_core(PVideoFrame& dst, PVideoFrame& src)
             }
 
             // Apply MSR to floating point intensity channel
-            MSRKernel(odata, idata, stride, width, height);
+            MSRKernel(odata, idata, gauss, stride, width, height);
             // Simplest color balance with pixel clipping on either side of the dynamic range
             SimplestColorBalance(odata, idata, stride, width, height);
 
@@ -685,6 +677,10 @@ void MSRCP::process_core(PVideoFrame& dst, PVideoFrame& src)
         }
         break;
     }
+
+    aligned_free(gauss);
+    aligned_free(idata);
+    aligned_free(odata);
 }
 
 MSRCP::MSRCP(PClip _child, const std::vector<double>& i_sigma, const double i_lower_thr, const double i_upper_thr, const bool i_fulls, const bool i_fulld, const double i_chroma_protect, IScriptEnvironment* env)
@@ -702,8 +698,6 @@ MSRCP::MSRCP(PClip _child, const std::vector<double>& i_sigma, const double i_lo
     else
         process = (vi.ComponentSize() == 1) ? &MSRCP::process_core<uint8_t, 2> : &MSRCP::process_core<uint16_t, 2>;
 
-    odata = reinterpret_cast<double*>(aligned_malloc(pcount * sizeof(double), 32));
-
     const int bps = vi.BitsPerComponent();
     peak = (1 << bps) - 1;
     const int fulls_p = 219 << (bps - 8);
@@ -718,11 +712,6 @@ MSRCP::MSRCP(PClip _child, const std::vector<double>& i_sigma, const double i_lo
     sNeutral = 128 << (bps - 8);
     dRangeFL = (fulld) ? peak : fulls_p;
     dRangeCFL = (fulld) ? peak : fulls_pc;
-}
-
-MSRCP::~MSRCP()
-{
-    aligned_free(odata);
 }
 
 PVideoFrame __stdcall MSRCP::GetFrame(int n, IScriptEnvironment* env)
@@ -742,9 +731,6 @@ PVideoFrame __stdcall MSRCP::GetFrame(int n, IScriptEnvironment* env)
 class MSRCR : public Common
 {
     double restore;
-    double* odataR;
-    double* odataG;
-    double* odataB;
     int sRange;
     int dFloor;
     int dCeil;
@@ -761,7 +747,6 @@ class MSRCR : public Common
 public:
     MSRCR(PClip _child, const std::vector<double>& i_sigma, const double i_lower_thr, const double i_upper_thr, const bool i_fulls, const bool i_fulld, const double i_restore, IScriptEnvironment* env);
     PVideoFrame __stdcall GetFrame(int n, IScriptEnvironment* env);
-    ~MSRCR();
 };
 
 template <typename T>
@@ -868,6 +853,7 @@ void MSRCR::process_core(PVideoFrame& dst, PVideoFrame& src)
     const int stride = src->GetPitch() / sizeof(T);
     const int width = src->GetRowSize() / sizeof(T);
     const int height = src->GetHeight();
+    pcount = stride * height;
 
     // Get read and write pointer for src and dst
     const T* Rsrcp = reinterpret_cast<const T*>(src->GetReadPtr(PLANAR_R));
@@ -876,6 +862,12 @@ void MSRCR::process_core(PVideoFrame& dst, PVideoFrame& src)
     T* Rdstp = reinterpret_cast<T*>(dst->GetWritePtr(PLANAR_R));
     T* Gdstp = reinterpret_cast<T*>(dst->GetWritePtr(PLANAR_G));
     T* Bdstp = reinterpret_cast<T*>(dst->GetWritePtr(PLANAR_B));
+
+    double* gauss = reinterpret_cast<double*>(aligned_malloc(pcount * sizeof(double), 32));
+    double* idata = reinterpret_cast<double*>(aligned_malloc(pcount * sizeof(double), 32));
+    double* odataR = reinterpret_cast<double*>(aligned_malloc(pcount * sizeof(double), 32));
+    double* odataG = reinterpret_cast<double*>(aligned_malloc(pcount * sizeof(double), 32));
+    double* odataB = reinterpret_cast<double*>(aligned_malloc(pcount * sizeof(double), 32));
 
     // If src is not of full range, determine the Floor and Ceil by the maximum and minimum value in the frame
     if (!fulls)
@@ -930,7 +922,7 @@ void MSRCR::process_core(PVideoFrame& dst, PVideoFrame& src)
     }
 
     // Apply MSR to floating point R channel
-    MSRKernel(odataR, idata, stride, width, height);
+    MSRKernel(odataR, idata, gauss, stride, width, height);
 
     // Derive floating point G channel from integer G channel
     if (fulls)
@@ -960,7 +952,7 @@ void MSRCR::process_core(PVideoFrame& dst, PVideoFrame& src)
     }
 
     // Apply MSR to floating point G channel
-    MSRKernel(odataG, idata, stride, width, height);
+    MSRKernel(odataG, idata, gauss, stride, width, height);
 
     // Derive floating point B channel from integer B channel
     if (fulls)
@@ -990,7 +982,7 @@ void MSRCR::process_core(PVideoFrame& dst, PVideoFrame& src)
     }
 
     // Apply MSR to floating point B channel
-    MSRKernel(odataB, idata, stride, width, height);
+    MSRKernel(odataB, idata, gauss, stride, width, height);
 
     // Color restoration
     //double RvalFL, GvalFL, BvalFL;
@@ -1017,6 +1009,12 @@ void MSRCR::process_core(PVideoFrame& dst, PVideoFrame& src)
     SimplestColorBalance(Rdstp, odataR, Rsrcp, dFloor, dCeil, stride, width, height);
     SimplestColorBalance(Gdstp, odataG, Gsrcp, dFloor, dCeil, stride, width, height);
     SimplestColorBalance(Bdstp, odataB, Bsrcp, dFloor, dCeil, stride, width, height);
+
+    aligned_free(gauss);
+    aligned_free(idata);
+    aligned_free(odataB);
+    aligned_free(odataG);
+    aligned_free(odataR);
 }
 
 MSRCR::MSRCR(PClip _child, const std::vector<double>& i_sigma, const double i_lower_thr, const double i_upper_thr, const bool i_fulls, const bool i_fulld, const double i_restore, IScriptEnvironment* env)
@@ -1029,10 +1027,6 @@ MSRCR::MSRCR(PClip _child, const std::vector<double>& i_sigma, const double i_lo
 
     process = (vi.ComponentSize() == 1) ? &MSRCR::process_core<uint8_t> : &MSRCR::process_core<uint16_t>;
 
-    odataR = reinterpret_cast<double*>(aligned_malloc(pcount * sizeof(double), 32));
-    odataG = reinterpret_cast<double*>(aligned_malloc(pcount * sizeof(double), 32));
-    odataB = reinterpret_cast<double*>(aligned_malloc(pcount * sizeof(double), 32));
-
     const int bps = vi.BitsPerComponent();
     peak = (1 << bps) - 1;
 
@@ -1041,13 +1035,6 @@ MSRCR::MSRCR(PClip _child, const std::vector<double>& i_sigma, const double i_lo
     sRange = (fulls) ? peak : (219 << (bps - 8));
     dFloor = (fulld) ? 0 : (16 << (bps - 8));
     dCeil = (fulld) ? peak : (235 << (bps - 8));
-}
-
-MSRCR::~MSRCR()
-{
-    aligned_free(odataB);
-    aligned_free(odataG);
-    aligned_free(odataR);
 }
 
 PVideoFrame __stdcall MSRCR::GetFrame(int n, IScriptEnvironment* env)
@@ -1068,7 +1055,7 @@ AVSValue __cdecl Create_MSRCP(AVSValue args, void* user_data, IScriptEnvironment
 {
     std::vector<double> sigma;
 
-    if (args[1].ArraySize())
+    if (args[1].Defined())
     {
         for (int i = 0; i < args[1].ArraySize(); ++i)
             sigma.emplace_back(args[1][i].AsFloatf());
@@ -1093,7 +1080,7 @@ AVSValue __cdecl Create_MSRCR(AVSValue args, void* user_data, IScriptEnvironment
 {
     std::vector<double> sigma;
 
-    if (args[1].ArraySize())
+    if (args[1].Defined())
     {
         for (int i = 0; i < args[1].ArraySize(); ++i)
             sigma.emplace_back(args[1][i].AsFloatf());

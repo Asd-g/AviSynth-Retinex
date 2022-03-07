@@ -1,9 +1,8 @@
 #include <winver.h>
-#include <ntdef.h>
 
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION             1,0,1,0
-PRODUCTVERSION        	1,0,1,0
+FILEVERSION             1,0,2,0
+PRODUCTVERSION        	1,0,2,0
 FILEFLAGSMASK           VS_FFI_FILEFLAGSMASK
 FILEFLAGS               0x0L
 FILEOS                  VOS__WINDOWS32
@@ -16,11 +15,11 @@ BEGIN
         BEGIN
         VALUE "Comments",         "Retinex algorithm."
         VALUE "FileDescription",  "Retinex for AviSynth+ >=3.6.x"
-        VALUE "FileVersion",      "1.0.1"
+        VALUE "FileVersion",      "1.0.2"
         VALUE "InternalName",     "Retinex"
         VALUE "OriginalFilename", "Retinex.dll"
         VALUE "ProductName",      "Retinex"
-        VALUE "ProductVersion",   "1.0.1"
+        VALUE "ProductVersion",   "1.0.2"
         END
     END
     BLOCK "VarFileInfo"
