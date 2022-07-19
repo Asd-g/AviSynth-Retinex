@@ -1,3 +1,6 @@
+##### 1.0.3:
+    Added support for 32-bit clips.
+
 ##### 1.0.2:
     Fixed default sigma.
     Fixed occasional crashes. (regression from 1.0.0)

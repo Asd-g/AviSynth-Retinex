@@ -62,14 +62,14 @@ For processing in YUV444 and RGB, the filtering results are different. The inten
     Determine the value range of input clip.\
     True: Full range/PC range.\
     False: Limited range/TV range.\
-    Default: True for RGB input, False for YUV/Gray input.
+    Default: True for RGB input, False for YUV/Gray input, Always true for 32-bit clips.
 
 - fulld\
     Determine the value range of output clip.\
     True: Full range/PC range.\
     False: Limited range/TV range.\
     Set different value for fulls and fulld will result in range conversion.\
-    Default: fulls.
+    Default: fulls, Always true for 32-bit clips.
 
 - chroma_protect\
     The base of log function to attenuate chroma adjustment.\
@@ -121,14 +121,14 @@ When MSR is applied to each spectral channel, it assumes the image obey gray wor
     Determine the value range of input clip.\
     True: Full range/PC range.\
     False: Limited range/TV range.\
-    Default: True.
+    Default: True, Always true for 32-bit clips.
 
 - fulld\
     Determine the value range of output clip.\
     True: Full range/PC range.\
     False: Limited range/TV range.\
     Set different value for fulls and fulld will result in range conversion.\
-    Default: fulls.
+    Default: fulls, Always true for 32-bit clips.
 
 - restore\
     The strength of the nonlinearity for color restoration function.\
