@@ -33,7 +33,7 @@ For processing in YUV444 and RGB, the filtering results are different. The inten
 ### Parameters:
 
 - clip\
-    A clip to process. It must be in Y/YUV444/RGB 8..16-bit planar format.
+    A clip to process. It must be in Y/YUV444/RGB planar format.
 
 - sigma\
     Sigma of Gaussian function to apply Gaussian filtering.\
@@ -57,13 +57,13 @@ For processing in YUV444 and RGB, the filtering results are different. The inten
     Increase it if there are some extreme bright parts in the Retinex output which makes the whole image too dark.\
     Must be positive and less then 1.0 and the sum of lower_thr and upper_thr must be less than 1.0.\
     Default: 0.001.
-    
+
 - fulls\
     Determine the value range of input clip.\
     True: Full range/PC range.\
     False: Limited range/TV range.\
     Default: True for RGB input, False for YUV/Gray input.
-    
+
 - fulld\
     Determine the value range of output clip.\
     True: Full range/PC range.\
@@ -78,7 +78,7 @@ For processing in YUV444 and RGB, the filtering results are different. The inten
     Must be equal to or greater than 1.0.\
     It is only available for YUV input.\
     Default: 1.2.
-    
+
 ---
 
 ```
@@ -92,7 +92,7 @@ When MSR is applied to each spectral channel, it assumes the image obey gray wor
 ### Parameters:
 
 - clip\
-    A clip to process. It must be in RGB 8..16-bit planar format.
+    A clip to process. It must be in RGB planar format.
 
 - sigma\
     Sigma of Gaussian function to apply Gaussian filtering.\
@@ -116,13 +116,13 @@ When MSR is applied to each spectral channel, it assumes the image obey gray wor
     Increase it if there are some extreme bright parts in the Retinex output which makes the whole image too dark.\
     Must be positive and less then 1.0 and the sum of lower_thr and upper_thr must be less than 1.0.\
     Default: 0.001.
-    
+
 - fulls\
     Determine the value range of input clip.\
     True: Full range/PC range.\
     False: Limited range/TV range.\
     Default: True.
-    
+
 - fulld\
     Determine the value range of output clip.\
     True: Full range/PC range.\
@@ -154,7 +154,7 @@ When MSR is applied to each spectral channel, it assumes the image obey gray wor
     cd AviSynth-Retinex && \
     mkdir build && \
     cd build && \
-    
+
     cmake ..
     make -j$(nproc)
     sudo make install

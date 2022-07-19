@@ -166,7 +166,7 @@ protected:
     int HistBins;
     bool fulls;
     bool fulld;
-    bool v8 = true;
+    bool v8;
     int sigma_size;
     int* Histogram;
     int pcount;
@@ -175,11 +175,8 @@ protected:
 
 public:
     Common(PClip _child, const std::vector<double>& i_sigma, const double i_lower_thr, const double i_upper_thr, const bool i_fulls, const bool i_fulld, IScriptEnvironment* env)
-        : GenericVideoFilter(_child), sigma(i_sigma), lower_thr(i_lower_thr), upper_thr(i_upper_thr), fulls(i_fulls), fulld(i_fulld)
+        : GenericVideoFilter(_child), sigma(i_sigma), lower_thr(i_lower_thr), upper_thr(i_upper_thr), HistBins(4096), fulls(i_fulls), fulld(i_fulld), v8(true), sigma_size(sigma.size()), pcount(0)
     {
-        HistBins = 4096;
-        sigma_size = sigma.size();
-
         for (int i = 0; i < sigma_size; ++i)
         {
             if (sigma[i] < 0.0)
@@ -392,9 +389,6 @@ void MSRCP::process_core(PVideoFrame& dst, PVideoFrame& src)
     double* idata = reinterpret_cast<double*>(aligned_malloc(pcount * sizeof(double), 32));
     double* odata = reinterpret_cast<double*>(aligned_malloc(pcount * sizeof(double), 32));
 
-    T sFloor = 0;
-    T sCeil = peak;
-
     switch (vf)
     {
         case 0: // Procedure for Gray color family
@@ -406,18 +400,32 @@ void MSRCP::process_core(PVideoFrame& dst, PVideoFrame& src)
             // Derive floating point intensity channel from integer Y channel
             if (fulls)
             {
-                const double gain = 1 / sRangeFL;
-
-                for (int j = 0; j < height; ++j)
+                if constexpr (std::is_integral_v<T>)
                 {
-                    int i = stride * j;
+                    const double gain = 1 / sRangeFL;
 
-                    for (int upper = i + width; i < upper; ++i)
-                        idata[i] = Ysrcp[i] * gain;
+                    for (int j = 0; j < height; ++j)
+                    {
+                        int i = stride * j;
+
+                        for (int upper = i + width; i < upper; ++i)
+                            idata[i] = Ysrcp[i] * gain;
+                    }
+                }
+                else
+                {
+                    for (int j = 0; j < height; ++j)
+                    {
+                        int i = stride * j;
+                        std::copy_n(Ysrcp + i, width, idata + i);
+                    }
                 }
             }
             else
             {
+                T sFloor = 0;
+                T sCeil = peak;
+
                 // If src is of limited range, determine the Floor and Ceil by the minimum and maximum value in the frame
                 T min = sCeil;
                 T max = sFloor;
@@ -454,20 +462,32 @@ void MSRCP::process_core(PVideoFrame& dst, PVideoFrame& src)
             // Simplest color balance with pixel clipping on either side of the dynamic range
             SimplestColorBalance(odata, idata, stride, width, height);
 
-            // Convert floating point intensity channel to integer Y channel
-            const double offset = dFloorFL + 0.5;
-
-            for (int j = 0; j < height; ++j)
+            if constexpr (std::is_integral_v<T>)
             {
-                int i = stride * j;
+                // Convert floating point intensity channel to integer Y channel
+                const double offset = dFloorFL + 0.5;
 
-                for (int upper = i + width; i < upper; ++i)
-                    Ydstp[i] = static_cast<T>(odata[i] * dRangeFL + offset);
+                for (int j = 0; j < height; ++j)
+                {
+                    int i = stride * j;
+
+                    for (int upper = i + width; i < upper; ++i)
+                        Ydstp[i] = static_cast<T>(odata[i] * dRangeFL + offset);
+                }
+            }
+            else
+            {
+                for (int j = 0; j < height; ++j)
+                {
+                    int i = stride * j;
+                    std::copy_n(odata + i, width, Ydstp + i);
+                }
             }
         }
         break;
         case 1: // Procedure for RGB color family
         {
+            T sFloor = 0;
             double sFloorFL = 0.0;
 
             // Get read and write pointer for src and dst
@@ -481,18 +501,34 @@ void MSRCP::process_core(PVideoFrame& dst, PVideoFrame& src)
             // Derive floating point intensity channel from integer RGB channel
             if (fulls)
             {
-                const double gain = 1 / (sRangeFL * 3);
-
-                for (int j = 0; j < height; ++j)
+                if constexpr (std::is_integral_v<T>)
                 {
-                    int i = stride * j;
+                    const double gain = 1 / (sRangeFL * 3);
 
-                    for (int upper = i + width; i < upper; ++i)
-                        idata[i] = (Rsrcp[i] + Gsrcp[i] + Bsrcp[i]) * gain;
+                    for (int j = 0; j < height; ++j)
+                    {
+                        int i = stride * j;
+
+                        for (int upper = i + width; i < upper; ++i)
+                            idata[i] = (Rsrcp[i] + Gsrcp[i] + Bsrcp[i]) * gain;
+                    }
+                }
+                else
+                {
+
+                    for (int j = 0; j < height; ++j)
+                    {
+                        int i = stride * j;
+
+                        for (int upper = i + width; i < upper; ++i)
+                            idata[i] = (Rsrcp[i] + Gsrcp[i] + Bsrcp[i]) * (1.0 / 3.0);
+                    }
                 }
             }
             else
             {
+                T sCeil = peak;
+
                 // If src is of limited range, determine the Floor and Ceil by the minimum and maximum value in the frame
                 T min = sCeil;
                 T max = sFloor;
@@ -535,46 +571,62 @@ void MSRCP::process_core(PVideoFrame& dst, PVideoFrame& src)
             // Adjust integer RGB channel according to filtering result in floating point intensity channel
             //T Rval, Gval, Bval;
 
-            if (sFloor == 0 && dFloorFL == 0 && sRangeFL == dRangeFL)
+            if constexpr (std::is_integral_v<T>)
             {
-                const double offset = 0.5;
-
-                for (int j = 0; j < height; ++j)
+                if (sFloor == 0 && dFloorFL == 0 && sRangeFL == dRangeFL)
                 {
-                    int i = stride * j;
+                    const double offset = 0.5;
 
-                    for (int upper = i + width; i < upper; ++i)
+                    for (int j = 0; j < height; ++j)
                     {
-                        const T Rval = Rsrcp[i];
-                        const T Gval = Gsrcp[i];
-                        const T Bval = Bsrcp[i];
-                        double gain = idata[i] <= 0 ? 1 : odata[i] / idata[i];
-                        gain = std::min(sRangeFL / std::max(Rval, std::max(Gval, Bval)), gain);
-                        Rdstp[i] = static_cast<T>(Rval * gain + offset);
-                        Gdstp[i] = static_cast<T>(Gval * gain + offset);
-                        Bdstp[i] = static_cast<T>(Bval * gain + offset);
+                        int i = stride * j;
+
+                        for (int upper = i + width; i < upper; ++i)
+                        {
+                            double gain = idata[i] <= 0 ? 1 : odata[i] / idata[i];
+                            gain = std::min(sRangeFL / std::max(Rsrcp[i], std::max(Gsrcp[i], Bsrcp[i])), gain);
+                            Rdstp[i] = static_cast<T>(Rsrcp[i] * gain + offset);
+                            Gdstp[i] = static_cast<T>(Gsrcp[i] * gain + offset);
+                            Bdstp[i] = static_cast<T>(Bsrcp[i] * gain + offset);
+                        }
+                    }
+                }
+                else
+                {
+                    const double scale = dRangeFL / sRangeFL;
+                    const double offset = dFloorFL + 0.5;
+
+                    for (int j = 0; j < height; ++j)
+                    {
+                        int i = stride * j;
+
+                        for (int upper = i + width; i < upper; ++i)
+                        {
+                            const T Rval = Rsrcp[i] - sFloor;
+                            const T Gval = Gsrcp[i] - sFloor;
+                            const T Bval = Bsrcp[i] - sFloor;
+                            double gain = idata[i] <= 0 ? 1 : odata[i] / idata[i];
+                            gain = std::min(sRangeFL / std::max(Rval, std::max(Gval, Bval)), gain) * scale;
+                            Rdstp[i] = static_cast<T>(Rval * gain + offset);
+                            Gdstp[i] = static_cast<T>(Gval * gain + offset);
+                            Bdstp[i] = static_cast<T>(Bval * gain + offset);
+                        }
                     }
                 }
             }
             else
             {
-                const double scale = dRangeFL / sRangeFL;
-                const double offset = dFloorFL + 0.5;
-
                 for (int j = 0; j < height; ++j)
                 {
                     int i = stride * j;
 
                     for (int upper = i + width; i < upper; ++i)
                     {
-                        const T Rval = Rsrcp[i] - sFloor;
-                        const T Gval = Gsrcp[i] - sFloor;
-                        const T Bval = Bsrcp[i] - sFloor;
                         double gain = idata[i] <= 0 ? 1 : odata[i] / idata[i];
-                        gain = std::min(sRangeFL / std::max(Rval, std::max(Gval, Bval)), gain) * scale;
-                        Rdstp[i] = static_cast<T>(Rval * gain + offset);
-                        Gdstp[i] = static_cast<T>(Gval * gain + offset);
-                        Bdstp[i] = static_cast<T>(Bval * gain + offset);
+                        gain = std::min(sRangeFL / std::max(Rsrcp[i], std::max(Gsrcp[i], Bsrcp[i])), gain);
+                        Rdstp[i] = static_cast<T>(Rsrcp[i] * gain);
+                        Gdstp[i] = static_cast<T>(Gsrcp[i] * gain);
+                        Bdstp[i] = static_cast<T>(Bsrcp[i] * gain);
                     }
                 }
             }
@@ -593,18 +645,32 @@ void MSRCP::process_core(PVideoFrame& dst, PVideoFrame& src)
             // Derive floating point intensity channel from integer Y channel
             if (fulls)
             {
-                const double gain = 1 / sRangeFL;
-
-                for (int j = 0; j < height; ++j)
+                if constexpr (std::is_integral_v<T>)
                 {
-                    int i = stride * j;
+                    const double gain = 1 / sRangeFL;
 
-                    for (int upper = i + width; i < upper; ++i)
-                        idata[i] = Ysrcp[i] * gain;
+                    for (int j = 0; j < height; ++j)
+                    {
+                        int i = stride * j;
+
+                        for (int upper = i + width; i < upper; ++i)
+                            idata[i] = Ysrcp[i] * gain;
+                    }
+                }
+                else
+                {
+                    for (int j = 0; j < height; ++j)
+                    {
+                        int i = stride * j;
+                        std::copy_n(Ysrcp + i, width, idata + i);
+                    }
                 }
             }
             else
             {
+                T sFloor = 0;
+                T sCeil = peak;
+
                 // If src is of limited range, determine the Floor and Ceil by the minimum and maximum value in the frame
                 T min = sCeil;
                 T max = sFloor;
@@ -647,31 +713,55 @@ void MSRCP::process_core(PVideoFrame& dst, PVideoFrame& src)
             const double chroma_protect_mul1 = static_cast<double>(chroma_protect - 1);
             const double chroma_protect_mul2 = static_cast<double>(1 / log(chroma_protect));
 
-            const double scale = dRangeCFL / sRangeCFL;
-            const double offset = (fulld) ? (sNeutral + 0.499999) : (sNeutral + 0.5);
-            const double offsetY = dFloorFL + 0.5;
-
-            for (int j = 0; j < height; ++j)
+            if constexpr (std::is_integral_v<T>)
             {
-                int i = stride * j;
+                const double offset = (fulld) ? (sNeutral + 0.499999) : (sNeutral + 0.5);
 
-                for (int upper = i + width; i < upper; ++i)
+                for (int j = 0; j < height; ++j)
                 {
-                    const int Uval = Usrcp[i] - sNeutral;
-                    const int Vval = Vsrcp[i] - sNeutral;
+                    int i = stride * j;
 
-                    double gain = [&]() {
-                        if (chroma_protect > 1)
-                            return idata[i] <= 0 ? 1 : log(odata[i] / idata[i] * chroma_protect_mul1 + 1) * chroma_protect_mul2;
-                        else
-                            return idata[i] <= 0 ? 1 : odata[i] / idata[i];
-                    }();
+                    for (int upper = i + width; i < upper; ++i)
+                    {
+                        const int Uval = Usrcp[i] - sNeutral;
+                        const int Vval = Vsrcp[i] - sNeutral;
 
-                    gain = (dRangeCFL == sRangeCFL) ? (std::min(sRangeC2FL / std::max(std::abs(Uval), std::abs(Vval)), gain)) : (std::min(sRangeC2FL / std::max(std::abs(Uval), std::abs(Vval)), gain) * scale);
+                        double gain = [&]() {
+                            if (chroma_protect > 1)
+                                return idata[i] <= 0 ? 1 : log(odata[i] / idata[i] * chroma_protect_mul1 + 1) * chroma_protect_mul2;
+                            else
+                                return idata[i] <= 0 ? 1 : odata[i] / idata[i];
+                        }();
 
-                    Ydstp[i] = static_cast<T>(odata[i] * dRangeFL + offsetY);
-                    Udstp[i] = static_cast<T>(Uval * gain + offset);
-                    Vdstp[i] = static_cast<T>(Vval * gain + offset);
+                        gain = (dRangeCFL == sRangeCFL) ? (std::min(sRangeC2FL / std::max(std::abs(Uval), std::abs(Vval)), gain)) : (std::min(sRangeC2FL / std::max(std::abs(Uval), std::abs(Vval)), gain) * (dRangeCFL / sRangeCFL));
+
+                        Ydstp[i] = static_cast<T>(odata[i] * dRangeFL + (dFloorFL + 0.5));
+                        Udstp[i] = static_cast<T>(Uval * gain + offset);
+                        Vdstp[i] = static_cast<T>(Vval * gain + offset);
+                    }
+                }
+            }
+            else
+            {
+                for (int j = 0; j < height; ++j)
+                {
+                    int i = stride * j;
+
+                    for (int upper = i + width; i < upper; ++i)
+                    {
+                        double gain = [&]() {
+                            if (chroma_protect > 1)
+                                return idata[i] <= 0 ? 1 : log(odata[i] / idata[i] * chroma_protect_mul1 + 1) * chroma_protect_mul2;
+                            else
+                                return idata[i] <= 0 ? 1 : odata[i] / idata[i];
+                        }();
+
+                        gain = (std::min(sRangeC2FL / std::max(std::abs(Usrcp[i]), std::abs(Vsrcp[i])), gain));
+
+                        Ydstp[i] = static_cast<float>(odata[i]);
+                        Udstp[i] = static_cast<float>(Usrcp[i] * gain);
+                        Vdstp[i] = static_cast<float>(Vsrcp[i] * gain);
+                    }
                 }
             }
         }
@@ -686,32 +776,73 @@ void MSRCP::process_core(PVideoFrame& dst, PVideoFrame& src)
 MSRCP::MSRCP(PClip _child, const std::vector<double>& i_sigma, const double i_lower_thr, const double i_upper_thr, const bool i_fulls, const bool i_fulld, const double i_chroma_protect, IScriptEnvironment* env)
     : Common(_child, i_sigma, i_lower_thr, i_upper_thr, i_fulls, i_fulld, env), chroma_protect(i_chroma_protect)
 {
-    if (vi.ComponentSize() > 2 || !vi.IsPlanar() || (!vi.IsRGB() && !vi.Is444() && !vi.IsY()))
-        env->ThrowError("MSRCP: the inplut clip must be in Y/YUV444/RGB 8..16-bit planar format.");
+    if (!vi.IsPlanar() || (!vi.IsRGB() && !vi.Is444() && !vi.IsY()))
+        env->ThrowError("MSRCP: the inplut clip must be in Y/YUV444/RGB planar format.");
     if (chroma_protect < 1)
         env->ThrowError("MSRCP: chroma_protect must be equal to or greater than 1.0.");
 
-    if (vi.IsY())
-        process = (vi.ComponentSize() == 1) ? &MSRCP::process_core<uint8_t, 0> : &MSRCP::process_core<uint16_t, 0>;
-    else if (vi.IsRGB())
-        process = (vi.ComponentSize() == 1) ? &MSRCP::process_core<uint8_t, 1> : &MSRCP::process_core<uint16_t, 1>;
+    switch (vi.ComponentSize())
+    {
+        case 1:
+        {
+            if (vi.IsY())
+                process = &MSRCP::process_core<uint8_t, 0>;
+            else if (vi.IsRGB())
+                process = &MSRCP::process_core <uint8_t, 1>;
+            else
+                process = &MSRCP::process_core<uint8_t, 2>;
+            break;
+        }
+        case 2:
+        {
+            if (vi.IsY())
+                process = &MSRCP::process_core<uint16_t, 0>;
+            else if (vi.IsRGB())
+                process = &MSRCP::process_core <uint16_t, 1>;
+            else
+                process = &MSRCP::process_core<uint16_t, 2>;
+            break;
+        }
+        default:
+        {
+            if (vi.IsY())
+                process = &MSRCP::process_core<float, 0>;
+            else if (vi.IsRGB())
+                process = &MSRCP::process_core <float, 1>;
+            else
+                process = &MSRCP::process_core<float, 2>;
+            break;
+        }
+    }
+
+    if (vi.ComponentSize() < 4)
+    {
+        const int bps = vi.BitsPerComponent();
+        peak = (1 << bps) - 1;
+        const int fulls_p = 219 << (bps - 8);
+        const int fulls_pc = 224 << (bps - 8);
+
+        // Calculate quantization parameters according to bit per sample and limited/full range
+        // Floor and Ceil for limited range src will be determined later according to minimum and maximum value in the frame
+        sRangeFL = (fulls) ? peak : fulls_p;
+        sRangeCFL = (fulls) ? peak : fulls_pc;
+        sRangeC2FL = (fulls) ? peak : fulls_pc / 2.0;
+        dFloorFL = (fulld) ? 0 : 16 << (bps - 8);
+        sNeutral = 128 << (bps - 8);
+        dRangeFL = (fulld) ? peak : fulls_p;
+        dRangeCFL = (fulld) ? peak : fulls_pc;
+    }
     else
-        process = (vi.ComponentSize() == 1) ? &MSRCP::process_core<uint8_t, 2> : &MSRCP::process_core<uint16_t, 2>;
-
-    const int bps = vi.BitsPerComponent();
-    peak = (1 << bps) - 1;
-    const int fulls_p = 219 << (bps - 8);
-    const int fulls_pc = 224 << (bps - 8);
-
-    // Calculate quantization parameters according to bit per sample and limited/full range
-    // Floor and Ceil for limited range src will be determined later according to minimum and maximum value in the frame
-    sRangeFL = (fulls) ? peak : fulls_p;
-    sRangeCFL = (fulls) ? peak : fulls_pc;
-    sRangeC2FL = (fulls) ? peak : fulls_pc / 2.0;
-    dFloorFL = (fulld) ? 0 : 16 << (bps - 8);
-    sNeutral = 128 << (bps - 8);
-    dRangeFL = (fulld) ? peak : fulls_p;
-    dRangeCFL = (fulld) ? peak : fulls_pc;
+    {
+        peak = 1;
+        sRangeFL = 1.0;
+        sRangeCFL = 1.0;
+        sRangeC2FL = 1.0;
+        dFloorFL = 0.0;
+        sNeutral = 0;
+        dRangeFL = 1.0;
+        dRangeCFL = 1.0;
+    }
 }
 
 PVideoFrame __stdcall MSRCP::GetFrame(int n, IScriptEnvironment* env)
@@ -738,7 +869,7 @@ class MSRCR : public Common
 
     // Simplest color balance with pixel clipping on either side of the dynamic range
     template <typename T>
-    void SimplestColorBalance(T* dst, double* odata, const T* src, int dFloor, int dCeil, const int stride, const int width, const int height); // odata as input, dst as output, src as source
+    void SimplestColorBalance(T* dst, double* odata, const T* src, const int stride, const int width, const int height); // odata as input, dst as output, src as source
 
     template <typename T>
     void process_core(PVideoFrame& dst, PVideoFrame& src);
@@ -750,7 +881,7 @@ public:
 };
 
 template <typename T>
-void MSRCR::SimplestColorBalance(T* dst, double* odata, const T* src, int dFloor, int dCeil, const int stride, const int width, const int height)
+void MSRCR::SimplestColorBalance(T* dst, double* odata, const T* src, const int stride, const int width, const int height)
 {
     double offset, gain;
     double min = DBL_MAX;
@@ -819,26 +950,52 @@ void MSRCR::SimplestColorBalance(T* dst, double* odata, const T* src, int dFloor
     }
 
     gain = (dCeil - dFloor) / (max - min);
-    offset = -min * gain + dFloor + 0.5;
+    offset = (sizeof(T) < 4) ? (-min * gain + dFloor + 0.5) : (-min * gain);
 
-    if (lower_thr > 0 || upper_thr > 0)
+    if constexpr (std::is_integral_v<T>)
     {
-        for (int j = 0; j < height; ++j)
+        if (lower_thr > 0 || upper_thr > 0)
         {
-            int i = stride * j;
+            for (int j = 0; j < height; ++j)
+            {
+                int i = stride * j;
 
-            for (int upper = i + width; i < upper; ++i)
-                dst[i] = static_cast<T>(std::clamp(odata[i] * gain + offset, static_cast<double>(dFloor), static_cast<double>(dCeil)));
+                for (int upper = i + width; i < upper; ++i)
+                    dst[i] = static_cast<T>(std::clamp(odata[i] * gain + offset, static_cast<double>(dFloor), static_cast<double>(dCeil)));
+            }
+        }
+        else
+        {
+            for (int j = 0; j < height; ++j)
+            {
+                int i = stride * j;
+
+                for (int upper = i + width; i < upper; ++i)
+                    dst[i] = static_cast<T>(odata[i] * gain + offset);
+            }
         }
     }
     else
     {
-        for (int j = 0; j < height; ++j)
+        if (lower_thr > 0 || upper_thr > 0)
         {
-            int i = stride * j;
+            for (int j = 0; j < height; ++j)
+            {
+                int i = stride * j;
 
-            for (int upper = i + width; i < upper; ++i)
-                dst[i] = static_cast<T>(odata[i] * gain + offset);
+                for (int upper = i + width; i < upper; ++i)
+                    dst[i] = static_cast<T>(std::clamp(odata[i] * gain + offset, 0.0, 1.0));
+            }
+        }
+        else
+        {
+            for (int j = 0; j < height; ++j)
+            {
+                int i = stride * j;
+
+                for (int upper = i + width; i < upper; ++i)
+                    dst[i] = static_cast<T>(odata[i] * gain + offset);
+            }
         }
     }
 }
@@ -897,14 +1054,25 @@ void MSRCR::process_core(PVideoFrame& dst, PVideoFrame& src)
     // Derive floating point R channel from integer R channel
     if (fulls)
     {
-        const double gain = 1.0 / sRange;
-
-        for (int j = 0; j < height; ++j)
+        if constexpr (std::is_integral_v<T>)
         {
-            int i = stride * j;
+            const double gain = 1.0 / sRange;
 
-            for (int upper = i + width; i < upper; ++i)
-                idata[i] = Rsrcp[i] * gain;
+            for (int j = 0; j < height; ++j)
+            {
+                int i = stride * j;
+
+                for (int upper = i + width; i < upper; ++i)
+                    idata[i] = Rsrcp[i] * gain;
+            }
+        }
+        else
+        {
+            for (int j = 0; j < height; ++j)
+            {
+                int i = stride * j;
+                std::copy_n(Rsrcp + i, width, idata + i);
+            }
         }
     }
     else
@@ -927,14 +1095,25 @@ void MSRCR::process_core(PVideoFrame& dst, PVideoFrame& src)
     // Derive floating point G channel from integer G channel
     if (fulls)
     {
-        const double gain = 1.0 / sRange;
-
-        for (int j = 0; j < height; ++j)
+        if constexpr (std::is_integral_v<T>)
         {
-            int i = stride * j;
+            const double gain = 1.0 / sRange;
 
-            for (int upper = i + width; i < upper; ++i)
-                idata[i] = Gsrcp[i] * gain;
+            for (int j = 0; j < height; ++j)
+            {
+                int i = stride * j;
+
+                for (int upper = i + width; i < upper; ++i)
+                    idata[i] = Gsrcp[i] * gain;
+            }
+        }
+        else
+        {
+            for (int j = 0; j < height; ++j)
+            {
+                int i = stride * j;
+                std::copy_n(Gsrcp + i, width, idata + i);
+            }
         }
     }
     else
@@ -957,14 +1136,25 @@ void MSRCR::process_core(PVideoFrame& dst, PVideoFrame& src)
     // Derive floating point B channel from integer B channel
     if (fulls)
     {
-        const double gain = 1.0 / sRange;
-
-        for (int j = 0; j < height; ++j)
+        if constexpr (std::is_integral_v<T>)
         {
-            int i = stride * j;
+            const double gain = 1.0 / sRange;
 
-            for (int upper = i + width; i < upper; ++i)
-                idata[i] = Bsrcp[i] * gain;
+            for (int j = 0; j < height; ++j)
+            {
+                int i = stride * j;
+
+                for (int upper = i + width; i < upper; ++i)
+                    idata[i] = Bsrcp[i] * gain;
+            }
+        }
+        else
+        {
+            for (int j = 0; j < height; ++j)
+            {
+                int i = stride * j;
+                std::copy_n(Bsrcp + i, width, idata + i);
+            }
         }
     }
     else
@@ -1002,13 +1192,16 @@ void MSRCR::process_core(PVideoFrame& dst, PVideoFrame& src)
             odataR[i] *= log(RvalFL * temp + 1);
             odataG[i] *= log(GvalFL * temp + 1);
             odataB[i] *= log(BvalFL * temp + 1);
+            odataR[i] = std::isnan(odataR[i]) ? 0.0 : odataR[i];
+            odataG[i] = std::isnan(odataG[i]) ? 0.0 : odataG[i];
+            odataB[i] = std::isnan(odataB[i]) ? 0.0 : odataB[i];
         }
     }
 
     // Simplest color balance with pixel clipping on either side of the dynamic range
-    SimplestColorBalance(Rdstp, odataR, Rsrcp, dFloor, dCeil, stride, width, height);
-    SimplestColorBalance(Gdstp, odataG, Gsrcp, dFloor, dCeil, stride, width, height);
-    SimplestColorBalance(Bdstp, odataB, Bsrcp, dFloor, dCeil, stride, width, height);
+    SimplestColorBalance<T>(Rdstp, odataR, Rsrcp, stride, width, height);
+    SimplestColorBalance<T>(Gdstp, odataG, Gsrcp, stride, width, height);
+    SimplestColorBalance<T>(Bdstp, odataB, Bsrcp, stride, width, height);
 
     aligned_free(gauss);
     aligned_free(idata);
@@ -1020,21 +1213,36 @@ void MSRCR::process_core(PVideoFrame& dst, PVideoFrame& src)
 MSRCR::MSRCR(PClip _child, const std::vector<double>& i_sigma, const double i_lower_thr, const double i_upper_thr, const bool i_fulls, const bool i_fulld, const double i_restore, IScriptEnvironment* env)
     : Common(_child, i_sigma, i_lower_thr, i_upper_thr, i_fulls, i_fulld, env), restore(i_restore)
 {
-    if (vi.ComponentSize() > 2 || !vi.IsPlanar() || !vi.IsRGB())
-        env->ThrowError("MSRCR: the inplut clip must be in RGB 8..16-bit planar format.");
+    if (!vi.IsPlanar() || !vi.IsRGB())
+        env->ThrowError("MSRCR: the inplut clip must be in RGB planar format.");
     if (restore < 0.0)
         env->ThrowError("MSRCR: restore must be non-negative float number.");
 
-    process = (vi.ComponentSize() == 1) ? &MSRCR::process_core<uint8_t> : &MSRCR::process_core<uint16_t>;
+    switch (vi.ComponentSize())
+    {
+        case 1: process = &MSRCR::process_core<uint8_t>; break;
+        case 2: process = &MSRCR::process_core<uint16_t>; break;
+        default: process = &MSRCR::process_core<float>; break;
+    }
 
-    const int bps = vi.BitsPerComponent();
-    peak = (1 << bps) - 1;
+    if (vi.ComponentSize() < 4)
+    {
+        const int bps = vi.BitsPerComponent();
+        peak = (1 << bps) - 1;
 
-    // Calculate quantization parameters according to bit per sample and limited/full range
-    // Floor and Ceil for limited range src will be determined later according to minimum and maximum value in the frame
-    sRange = (fulls) ? peak : (219 << (bps - 8));
-    dFloor = (fulld) ? 0 : (16 << (bps - 8));
-    dCeil = (fulld) ? peak : (235 << (bps - 8));
+        // Calculate quantization parameters according to bit per sample and limited/full range
+        // Floor and Ceil for limited range src will be determined later according to minimum and maximum value in the frame
+        sRange = (fulls) ? peak : (219 << (bps - 8));
+        dFloor = (fulld) ? 0 : (16 << (bps - 8));
+        dCeil = (fulld) ? peak : (235 << (bps - 8));
+    }
+    else
+    {
+        peak = 1;
+        sRange = 1;
+        dFloor = 0;
+        dCeil = 1;
+    }
 }
 
 PVideoFrame __stdcall MSRCR::GetFrame(int n, IScriptEnvironment* env)
@@ -1064,7 +1272,12 @@ AVSValue __cdecl Create_MSRCP(AVSValue args, void* user_data, IScriptEnvironment
         sigma = { 25.0, 80.0, 250.0 };
 
     PClip clip = args[0].AsClip();
-    const bool fulls = args[4].AsBool((clip->GetVideoInfo().IsRGB()) ? true : false);
+    const bool fulls = [&]() {
+        if (clip->GetVideoInfo().ComponentSize() == 4)
+            return true;
+
+        return args[4].AsBool(args[4].AsBool(clip->GetVideoInfo().IsRGB()) ? true : false);
+    }();
 
     return new MSRCP(clip,
         sigma,
